@@ -18,27 +18,136 @@ import resources.actions as actions
 import resources.robots as robots
 
 
-def LM(prompt, gpt_version, max_tokens=128, temperature=0, stop=None, logprobs=1, frequency_penalty=0):
-    
-    if "gpt" not in gpt_version:
-        response = openai.Completion.create(model=gpt_version, 
-                                            prompt=prompt, 
-                                            max_tokens=max_tokens, 
-                                            temperature=temperature, 
-                                            stop=stop, 
-                                            logprobs=logprobs, 
-                                            frequency_penalty = frequency_penalty)
-        
-        return response, response["choices"][0]["text"].strip()
-    
+import torch
+from transformers import pipeline
+
+# The example given by huggingg face
+# def LM():
+#     
+#     chat = [
+#         {"role": "system", "content": "You are a sassy, wise-cracking robot as imagined by Hollywood circa 1986."},
+#         {"role": "user", "content": "Hey, can you tell me any fun things to do in New York?"}
+#     ]
+
+#     pipeline = pipeline(task="text-generation", model="meta-llama/Meta-Llama-3-8B-Instruct", torch_dtype=torch.bfloat16, device_map="auto")
+#     response = pipeline(chat, max_new_tokens=512)
+#     print(response[0]["generated_text"][-1]["content"])
+
+# rewritten to match the SMART_LLM
+def LM(prompt, gpt_version="meta-llama/Meta-Llama-3-8B-Instruct", max_tokens=128, temperature=0.7, stop=None, logprobs=None, frequency_penalty=0):
+    """
+    Generates text using the Hugging Face pipeline, mimicking OpenAI's Completion and ChatCompletion.
+
+    Args:
+        prompt (str or list): The input prompt. If 'gpt' is in gpt_version, it expects a list of messages
+                              like [{"role": "user", "content": "Hello!"}]. Otherwise, a string.
+        gpt_version (str): The Hugging Face model identifier (e.g., "meta-llama/Meta-Llama-3-8B-Instruct").
+                           If "gpt" is in the name, it will treat the input as a chat prompt.
+        max_tokens (int): The maximum number of new tokens to generate.
+        temperature (float): Controls the randomness of the output. Higher values mean more random.
+        stop (list, optional): A list of strings that, if encountered, will stop the generation.
+        logprobs (int, optional): Not directly supported in the same way by all Hugging Face pipelines
+                                   for simple generation, but included for API compatibility.
+        frequency_penalty (float): Not directly supported in the same way by all Hugging Face pipelines
+                                   for simple generation, but included for API compatibility.
+
+    Returns:
+        tuple: A tuple containing:
+               - response (list): The raw response from the Hugging Face pipeline.
+               - generated_text (str): The extracted generated text.
+    """
+
+    # Initialize the pipeline
+    # device_map="auto" will automatically place the model on available devices (e.g., GPU)
+    # torch_dtype=torch.bfloat16 is good for newer GPUs to save memory and speed up computation
+    model_pipeline = pipeline(
+        task="text-generation",
+        model=gpt_version,
+        torch_dtype=torch.bfloat16,
+        device_map="auto"
+    )
+
+    generation_args = {
+        "max_new_tokens": max_tokens,
+        "temperature": temperature,
+        # "do_sample": True if temperature > 0 else False, # Enable sampling if temperature is not 0
+    }
+
+    if stop:
+        # Handling 'stop' words in Hugging Face pipelines is typically done via custom stopping criteria.
+        # For simplicity in this direct translation, it's not directly mapped for all models,
+        # as it requires more advanced tokenizer integration.
+        # If crucial, you would implement a custom stopping criteria callback.
+        print("Warning: 'stop' parameter might not be fully supported by all Hugging Face models directly via pipeline generation arguments. Custom stopping criteria may be needed.")
+        pass # Placeholder for more sophisticated stop word handling if needed
+
+    # The logprobs and frequency_penalty parameters are not directly available as simple
+    # generation arguments in the Hugging Face pipeline in the same way as OpenAI.
+    # For logprobs, you might need to access the model's outputs more directly or use
+    # a different task like 'fill-mask' or custom model inference.
+    # For frequency_penalty, it's typically handled by custom token samplers.
+    if logprobs is not None:
+        print("Warning: 'logprobs' parameter is not directly supported by the Hugging Face text-generation pipeline in the same way as OpenAI.")
+    if frequency_penalty != 0:
+        print("Warning: 'frequency_penalty' parameter is not directly supported by the Hugging Face text-generation pipeline in the same way as OpenAI.")
+
+
+    if "gpt" not in gpt_version.lower() and not isinstance(prompt, list):
+        # Treat as a simple text completion if "gpt" is not in version name and prompt is a string
+        # This mirrors openai.Completion.create
+        response = model_pipeline(prompt, **generation_args)
+        generated_text = response[0]["generated_text"].strip()
+        # For completion, the prompt is part of the generated_text, so we need to remove it
+        if generated_text.startswith(prompt):
+            generated_text = generated_text[len(prompt):].strip()
     else:
-        response = openai.ChatCompletion.create(model=gpt_version, 
-                                            messages=prompt, 
-                                            max_tokens=max_tokens, 
-                                            temperature=temperature, 
-                                            frequency_penalty = frequency_penalty)
+        # Treat as a chat completion if "gpt" is in version name or prompt is a list of messages
+        # This mirrors openai.ChatCompletion.create
+        if not isinstance(prompt, list):
+            raise ValueError("For 'chat' style models (like GPT variants or when 'gpt' is in gpt_version), 'prompt' must be a list of message dictionaries.")
+
+        response = model_pipeline(prompt, **generation_args)
+        # For chat models, the output is typically the last turn's content
+        # The structure can vary slightly by model, but usually it's in the last dict's 'content'
+        if response and response[0] and "generated_text" in response[0] and len(response[0]["generated_text"]) > 0:
+            # The generated_text for chat models often contains the entire conversation,
+            # so we need to extract only the last assistant's reply.
+            # Assuming the last element of generated_text is the assistant's response.
+            # This can be model-dependent. For Llama-3, the structure is usually
+            # a list of dictionaries with 'role' and 'content'.
+            full_chat_history = response[0]["generated_text"]
+            last_message = full_chat_history[-1]
+            if isinstance(last_message, dict) and "content" in last_message:
+                generated_text = last_message["content"].strip()
+            else:
+                # Fallback if the structure is not exactly as expected
+                generated_text = str(last_message).strip()
+        else:
+            generated_text = "" # No content generated
+
+    return response, generated_text
+
+# def LM(prompt, gpt_version, max_tokens=128, temperature=0, stop=None, logprobs=1, frequency_penalty=0):
+    
+#     if "gpt" not in gpt_version:
+#         response = openai.Completion.create(model=gpt_version, 
+#                                             prompt=prompt, 
+#                                             max_tokens=max_tokens, 
+#                                             temperature=temperature, 
+#                                             stop=stop, 
+#                                             logprobs=logprobs, 
+#                                             frequency_penalty = frequency_penalty)
         
-        return response, response["choices"][0]["message"]["content"].strip()
+#         return response, response["choices"][0]["text"].strip()
+    
+#     else:
+#         response = openai.ChatCompletion.create(model=gpt_version, 
+#                                             messages=prompt, 
+#                                             max_tokens=max_tokens, 
+#                                             temperature=temperature, 
+#                                             frequency_penalty = frequency_penalty)
+        
+#         return response, response["choices"][0]["message"]["content"].strip()
 
 def set_api_key(openai_api_key):
     openai.api_key = Path(openai_api_key + '.txt').read_text()
@@ -63,7 +172,7 @@ def get_ai2_thor_objects(floor_plan_id):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--floor-plan", type=int, required=True)
+    parser.add_argument("--floor-plan", type=int, default="6")
     parser.add_argument("--openai-api-key-file", type=str, default="api_key")
     parser.add_argument("--gpt-version", type=str, default="gpt-4", 
                         choices=['gpt-3.5-turbo', 'gpt-4', 'gpt-3.5-turbo-16k'])
@@ -81,7 +190,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
 
-    set_api_key(args.openai_api_key_file)
+    # set_api_key(args.openai_api_key_file)
     
     if not os.path.isdir(f"./logs/"):
         os.makedirs(f"./logs/")

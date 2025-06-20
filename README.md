@@ -62,3 +62,8 @@ If you find this work useful for your research, please consider citing:
  	year={2023}
 }
 ```
+
+
+## My additions
+python 3.12 and cuda 12.6
+pip install "transformers[torch]"
